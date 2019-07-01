@@ -1,0 +1,159 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#purpose: Classification and Integrative Clustering of Multi-Omics Data of Breast Cancer Patients
+#authors: Amiri, NN; Rövenich, JK; Kieboom, RM; Nies, I
+#date: 01-07-2019
+#version: 1.0
+#software version: RStudio 1.2.1335
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+# SURVIVAL ANALYSIS.
+## Aim: Perform Kaplan-Meier survival analysis to answer the question if there is a significant difference in survival time between breast cancer patients of stage I, II, and III.
+
+## First, load the survival package and construct a survival object with survival time and survival status (0 = censored, 1 = death). Calculate the median survival times for each of the stages using survfit. 
+```{r, echo=FALSE}
+library(survival)
+survival_object = Surv(cdata$Survival, cdata$Death)
+survfit(survival_object ~ cdata$stage)
+```
+
+## Perform a Kaplan-Meier analysis with the survival object. The obtained survival curve shows the overall survival data with the confidence interval.
+```{r}
+sfit = survfit(survival_object ~ 1)
+plot(sfit)
+```
+
+## Perform a Kaplan-Meier analysis on the three breast cancer stages separately and perform a Log-Rank test to compare the survival probabilities of the groups. 
+```{r}
+sfit = survfit(survival_object ~ cdata$stage)
+plot(sfit, col=1:3)
+legend("topright", legend = names (sfit$strata), col = 1:3, pch = 19)
+survdiff(survival_object ~ cdata$stage)
+```
+
+# INTEGRATIVE CLUSTERING.
+## Aim: Clustering of a multi-omic breast cancer dataset with SNF to obtain patient groups with statistically significant different prognosis.
+
+## First, install and load the SNFtool package and check if all data is present (ge = gene expression profiling (mRNA sequencing), me = DNA methylation profiling, mirna = microRNA sequencing, cdata = clinical overall survival data). 
+```{r}
+#install.package("SNFtool")
+library(SNFtool)
+ls()
+```
+
+## Investigate if the data meets the requirements:
+* Most algorithms in R list objects in rows and features in columns. SNF follows this convention. 
+* The number of the patients (105 patients) in all individual data sets has to be the same.
+* The sequence of the patients in all individual data sets has to be the same.
+```{r}
+ge[1:10,1:10]
+me[1:10,1:10]
+mirna[1:10,1:10]
+dim(ge)
+dim(me)
+dim(mirna)
+rownames(ge) == rownames(me)
+rownames(ge) == rownames(mirna)
+rownames(me) == rownames(mirna)
+```
+
+## Set the parameters to run the SNF. 
+```{r}
+K = 15;		      # number of neighbours, usually (10~30)
+alpha = 0.7;  	# hyper-parameter, usually (0.3~0.8)
+T = 15; 	      # Number of Iterations, usually (10~20)
+```
+
+## Calculate the pair-wise distance for all different datasets.
+```{r}
+Dist1 = dist2(as.matrix(ge), as.matrix(ge))
+Dist2 = dist2(as.matrix(me), as.matrix(me))
+Dist3 = dist2(as.matrix(mirna), as.matrix(mirna))
+```
+
+## Construct similarity graphs.
+```{r}
+W1 = affinityMatrix(Dist1, K, alpha)
+W2 = affinityMatrix(Dist2, K, alpha)
+W3 = affinityMatrix(Dist3, K, alpha)
+```
+
+## Fuse all the graphs.
+```{r}
+W = SNF(list(W1,W2,W3), K, T)
+```
+
+## Estimate number of clusters using the gap-statistic.
+```{r}
+estimateNumberOfClustersGivenGraph(W,2:10)
+```
+
+## Use the best recommendation for the clusters and define the number of clusters to be created.
+```{r}
+C = 2
+snf_clusters = spectralClustering(W,C, type = 3)
+```
+
+## To evaluate the meaningfulness of the integrative clustering, create a Kaplan-Meier curve and perform a Log-Rank test to test for statistical differences in survival times between the defined groups of patients.
+```{r}
+plot(survfit(survival_object ~ snf_clusters), col=1:2, main="SNF clustering", xlab="survival time (days)", ylab="survival probability")
+survdiff(survival_object ~ snf_clusters)
+```
+
+## Compare the SNF clustering results to the clustering using the individual datasets (gene expression (ge), microRNA expression (mirna) and DNA methylation (me)).
+## Make a Kaplan-Meier curve of the gene expression data and perform a Log-Rank test to test for statistical differences in survival times between the defined groups of patients.
+```{r}
+single_data_clusters = spectralClustering(W1, C, type = 3);
+plot(survfit(survival_object ~ single_data_clusters), col=1:3, main="GE clustering", xlab="survival time (days)", ylab="survival probability")
+survdiff(survival_object ~ single_data_clusters)
+```
+
+## Make a Kaplan-Meier curve of the DNA methylation data and perform a Log-Rank test to test for statistical differences in survival times between the defined groups of patients.
+```{r}
+single_data_clusters = spectralClustering(W2, C, type = 3);
+plot(survfit(survival_object ~ single_data_clusters), col=1:3, main="ME clustering", xlab="survival time (days)", ylab="survival probability")
+survdiff(survival_object ~ single_data_clusters)
+```
+
+## Make a Kaplan-Meier curve of the microRNA expression data and perform a Log-Rank test to test for statistical differences in survival times between the defined groups of patients.
+```{r}
+single_data_clusters = spectralClustering(W3, C, type = 3);
+plot(survfit(survival_object ~ single_data_clusters), col=1:3, main="miRNA clustering", xlab="survival time (days)", ylab="survival probability")
+survdiff(survival_object ~ single_data_clusters)
+```
+
+# EXTRACT RELEVANT FEATURES FROM CLUSTERING.
+## Aim: For a biological interpretation of the results of a clustering or classification it is of interest to find out which features have been relevant for the clustering/classification.
+
+## Rank features by NMI to find a list of relevant features using the normalized mutual information (NMI) score. Running this part of the code may take a while because of the large data set. 
+```{r}
+NMI_scores <- rankFeaturesByNMI(list(as.matrix(ge),as.matrix(me),as.matrix(mirna)), W)
+```
+
+## Select the top 10 most relevant features and obtain the names of these features.
+```{r}
+library(heatmap.plus)
+topXfeatures = 10
+colnames(ge[order(snf_clusters), order(NMI_scores[[1]][[1]], decreasing=T)[1:topXfeatures]])
+colnames(me[order(snf_clusters), order(NMI_scores[[1]][[2]], decreasing=T)[1:topXfeatures]])
+colnames(mirna[order(snf_clusters), order(NMI_scores[[1]][[3]], decreasing=T)[1:topXfeatures]])
+```
+
+## Obtain the values of the top 10 relevant features of each data set to see whether there is up-regulation or down-regulation of certain features.
+```{r}
+aggregate(mirna[,order(NMI_scores[[1]][[3]], decreasing=T)[1:topXfeatures]], by=list(snf_clusters), mean)
+aggregate(me[,order(NMI_scores[[1]][[3]], decreasing=T)[1:topXfeatures]], by=list(snf_clusters), mean)
+aggregate(ge[,order(NMI_scores[[1]][[3]], decreasing=T)[1:topXfeatures]], by=list(snf_clusters), mean)
+```
+
+## Finally, load the gplots package and plot the heat-maps for all three datasets based on the top 10 relevant features. The red and black boxes on the left side of the heat-map refer to the two groups of patients that were defined. 
+```{r}
+library(gplots)
+heatmap.2(ge[order(snf_clusters), order(NMI_scores[[1]][[1]],decreasing=T)[1:topXfeatures]], Rowv=NA, RowSideColors=palette()[sort(snf_clusters)], scale="col", main="Top GE features", trace="none", col=redgreen)
+heatmap.2(me[order(snf_clusters), order(NMI_scores[[1]][[2]],decreasing=T)[1:topXfeatures]], Rowv=NA, RowSideColors=palette()[sort(snf_clusters)], scale="col", main="Top ME features", trace="none", col=redgreen)
+heatmap.2(mirna[order(snf_clusters), order(NMI_scores[[1]][[3]],decreasing=T)[1:topXfeatures]], Rowv=NA, RowSideColors=palette()[sort(snf_clusters)], scale="col", main="Top MIRNA features", trace="none", col=redgreen)
+```
